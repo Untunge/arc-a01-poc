@@ -204,7 +204,7 @@ async fn main() {
                     match swarm
                         .behaviour_mut()
                         .gossipsub
-                        .subscribe(&gossipsub::Topic::new(topic))
+                        .subscribe(&gossipsub::Sha256Topic::new(topic))
                     {
                         Ok(_) => subscribed += 1,
                         Err(e) => {
