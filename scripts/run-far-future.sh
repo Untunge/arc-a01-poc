@@ -228,14 +228,24 @@ log "Baseline ${BASELINE_SECS}s done. node0 WAL: $(wal_size 0) bytes."
 # ---------- 5. stall: SIGSTOP all 5 ELs; wait for rounds to advance ----------
 for i in 0 1 2 3 4; do kill -STOP "$(pid_of "$i" el)" 2>/dev/null || true; done
 log "SIGSTOP all 5 ELs at $(date -u +%H:%M:%S). No block can be built; rounds should skip via polka-nil."
-H_STALL="$(current_height 0)"
-log "Node0 CL height at stall: ${H_STALL:-?} (EL height was $H_BEFORE)."
+# NOTE (run 1 lesson): do NOT pin the stalled height from a single read at
+# SIGSTOP time. The height in flight at that moment (239) is decided once
+# more (240) before the freeze takes effect, and rounds then skip at 240
+# while 239 stays at round 0 forever. So re-read the LATEST height every
+# poll and accept only when the latest height itself has reached the target
+# round — that can only happen once a height has genuinely stalled.
+H_STALL=""
 R_STALL=""
+ITER=0
 for _ in $(seq 1 $((STALL_WAIT_SECS / 5))); do
-  [[ -z "$H_STALL" ]] && H_STALL="$(current_height 0)"
-  if [[ -n "$H_STALL" ]]; then
-    R_STALL="$(round_at_height 0 "$H_STALL")"
-    if [[ -n "$R_STALL" && "$R_STALL" -ge "$STALL_TARGET_ROUND" ]]; then break; fi
+  ITER=$((ITER + 1))
+  H_NOW="$(current_height 0)"
+  if [[ -n "$H_NOW" ]]; then
+    R_NOW="$(round_at_height 0 "$H_NOW")"
+    if [[ $((ITER % 12)) == 0 ]]; then log "  stall wait: latest height=${H_NOW} round=${R_NOW:-?} (target round $STALL_TARGET_ROUND)"; fi
+    if [[ -n "$R_NOW" && "$R_NOW" -ge "$STALL_TARGET_ROUND" ]]; then
+      H_STALL="$H_NOW"; R_STALL="$R_NOW"; break
+    fi
   fi
   sleep 5
 done
