@@ -41,7 +41,14 @@ at the same (height, round). Fixed upstream in v0.8.1/v0.8.2
   asserted in `arc-node/crates/malachite-cli/src/new.rs`.
 - `scripts/verify-keys.py` — verify the 4 pubkeys are in the localdev genesis
   validator-registry storage (`0x3600...0002`).
-- `scripts/run-poc.sh` — the C2-01 sequence + evidence collection.
+- `scripts/run-poc.sh` — the C2-01 sequence + evidence collection. Stall
+  mechanism (run 3 lesson): SIGSTOP all 4 **ELs**, not the CLs — stopping
+  CLs drops online power below the 67/100 quorum, so no polka ever forms and
+  the Prevote timeout is never armed (malachite schedules it only on
+  PolkaAny, `core-state-machine/src/state_machine.rs` L34/L35), so the net
+  halts at round 0 by design. With the ELs frozen, all 4 CLs keep voting
+  (80/100), no proposer can build a block, and every round ends polka-nil
+  → precommit nil → precommit timeout → next round, at the same height.
 - `RUNBOOK-C2-01.md` — the manual runbook (same sequence, by hand).
 
 ## Run it

@@ -6,9 +6,11 @@
 # exemption; fixed in v0.8.1/v0.8.2) -> validator can lose lock/votes and
 # equivocate after restart.
 #
-# Sequence: start 4 nodes -> SIGSTOP 2 CLs (stall, rounds advance on timeouts)
-# -> snapshot target WAL/store -> SIGKILL target CL -> restart same --home
-# -> SIGCONT stopped CLs -> compare target's pre/post-restart votes at same (H,R).
+# Sequence: start 4 nodes -> SIGSTOP all 4 ELs (CLs keep voting, no block can
+# be built, so rounds at the current height skip via polka-nil) -> snapshot
+# target WAL/store -> SIGKILL target CL -> restart same --home (WAL replay
+# drops its far-round votes past the 10-round lookahead) -> SIGCONT the ELs
+# -> compare target's pre/post-restart votes at same (H,R).
 #
 # Env:
 #   POC_DIR      — repo root (default: parent of this script's dir)
@@ -47,13 +49,19 @@ except Exception:
 }
 dropped_votes() { # $1 = node index -> counter value or empty
   curl -s --max-time 10 "http://127.0.0.1:$((29000 + $1))/metrics" 2>/dev/null \
-    | grep -E '^malachite_consensus_dropped_future_round_votes' | awk '{print $2}' | head -n 1
+    | grep -E '^malachitebft_core_consensus_dropped_future_round_votes_total' | awk '{print $2}' | head -n 1
 }
-max_round_in_log() { # $1 = node index -> max round number seen in CL log (tolerant grep)
+current_height() { # $1 = node index -> latest height from "Starting new height" in CL log
   local f="$NET/node$1/logs/cl.log"
   [[ -f "$f" ]] || { echo ""; return; }
-  grep -aoE '(consensus\.round|round)[=: "]+[0-9]+' "$f" 2>/dev/null \
-    | grep -oE '[0-9]+$' | sort -n | tail -n 1
+  grep -aoE 'Starting new height height=[0-9]+' "$f" 2>/dev/null \
+    | grep -oE '[0-9]+$' | tail -n 1
+}
+round_at_height() { # $1 = node index, $2 = height -> max round seen at that height in CL log
+  local f="$NET/node$1/logs/cl.log"
+  [[ -f "$f" ]] || { echo ""; return; }
+  grep -aoE "consensus\\{height=$2 round=[0-9]+\\}" "$f" 2>/dev/null \
+    | grep -oE 'round=[0-9]+' | grep -oE '[0-9]+$' | sort -n | tail -n 1
 }
 pid_of() { cat "$NET/node$1/$2.pid" 2>/dev/null; }
 peer_count() { # $1 = node index -> distinct peers seen in CL log
@@ -155,25 +163,36 @@ for i in 0 1 2 3; do
   curl -s --max-time 10 "http://127.0.0.1:$((29000 + i))/metrics" > "$EVIDENCE_DIR/metrics-before/node$i.prom" 2>/dev/null || true
   log "  node$i dropped_future_round_votes (before): $(dropped_votes "$i")"
 done
-R_FIRST="$(max_round_in_log 0)"
-log "node0 max round in log at baseline: ${R_FIRST:-unknown}"
+H_CL="$(current_height 0)"
+R_FIRST="$(round_at_height 0 "$H_CL")"
+log "node0 CL height at baseline: ${H_CL:-unknown}, round at that height: ${R_FIRST:-unknown}"
 grep -i "vote" "$NET/node0/logs/cl.log" 2>/dev/null | tail -n 50 > "$EVIDENCE_DIR/pre-crash/votes-baseline.txt" || true
 
-# ---------- 4. stall: SIGSTOP node2 + node3 CLs ----------
-kill -STOP "$(pid_of 2 cl)" "$(pid_of 3 cl)"
-log "SIGSTOP node2+node3 CLs at $(date -u +%H:%M:%S). Remaining power 40/100 < 2/3 quorum; rounds advance on timeouts."
-log "Waiting for node0 round to advance >= $STALL_ROUNDS past baseline round ${R_FIRST:-?} (max 600s)..."
+# ---------- 4. stall: SIGSTOP all 4 ELs (not the CLs) ----------
+# Run-3 lesson: stopping 2 of 4 CLs leaves 40/100 < 67 quorum, so no polka
+# ever forms and the Prevote timeout is never armed (malachite schedules it
+# only on PolkaAny, state_machine.rs L34/L35) — the net halts at round 0 by
+# design. Stopping the ELs instead keeps all 4 CLs voting (80/100 >= 67):
+# no proposer can build a block, so every round ends polka-nil -> precommit
+# nil -> precommit timeout -> next round, at the SAME height. That is the
+# >10-round skip C2-01 needs, with the target alive and voting throughout.
+for i in 0 1 2 3; do kill -STOP "$(pid_of "$i" el)"; done
+log "SIGSTOP all 4 ELs at $(date -u +%H:%M:%S). CLs keep voting; no block can be built, so rounds at height $H_CL should skip via polka-nil."
+log "Waiting for node0 round at height $H_CL to advance >= $STALL_ROUNDS past baseline round ${R_FIRST:-?} (max 300s)..."
 R_TARGET=""
 if [[ -n "$R_FIRST" ]]; then R_TARGET=$((R_FIRST + STALL_ROUNDS)); fi
 STALL_OK=0
-for _ in $(seq 1 120); do
-  R_NOW="$(max_round_in_log 0)"
+for n in $(seq 1 60); do
+  R_NOW="$(round_at_height 0 "$H_CL")"
+  H_NOW="$(current_height 0)"
   if [[ -n "$R_NOW" && -n "$R_TARGET" && "$R_NOW" -ge "$R_TARGET" ]]; then STALL_OK=1; break; fi
+  if [[ "$((n % 12))" == 0 ]]; then log "  ... after $((n * 5))s: height=${H_NOW:-?} round at H_CL=${R_NOW:-?} (target >= ${R_TARGET:-?})"; fi
   sleep 5
 done
-R_STALL="$(max_round_in_log 0)"
-log "Stall phase done. node0 max round now: ${R_STALL:-unknown} (target >= ${R_TARGET:-?}, reached=$STALL_OK)."
-log "Height during stall (should be stuck at H=$H_STALL): $(eth_block_number 8545)"
+R_STALL="$(round_at_height 0 "$H_CL")"
+H_STALL_CL="$(current_height 0)"
+log "Stall phase done. node0 height now: ${H_STALL_CL:-unknown} (was $H_CL), round at H_CL: ${R_STALL:-unknown} (target >= ${R_TARGET:-?}, reached=$STALL_OK)."
+log "Height on ELs is unreadable while ELs are stopped (eth RPC frozen by design)."
 
 # ---------- 5. pre-crash snapshot (node0 = target) ----------
 cp "$NET/node0/malachite/wal/consensus.wal" "$EVIDENCE_DIR/pre-crash/" 2>/dev/null || log "WARN: WAL copy failed"
@@ -182,18 +201,18 @@ cp "$NET/node0/logs/cl.log" "$EVIDENCE_DIR/pre-crash/cl-before.log" 2>/dev/null 
 grep -i "vote" "$EVIDENCE_DIR/pre-crash/cl-before.log" 2>/dev/null | tail -n 100 > "$EVIDENCE_DIR/pre-crash/votes-before.txt" || true
 DROPPED_BEFORE="$(dropped_votes 0)"
 log "node0 dropped_future_round_votes before crash: ${DROPPED_BEFORE:-unknown}"
-log "Pre-crash snapshot saved (WAL bytes: $(stat -c%s "$EVIDENCE_DIR/pre-crash/consensus.wal" 2>/dev/null || echo ?))."
+log "Pre-crash snapshot saved (WAL bytes: $(stat -c%s "$EVIDENCE_DIR/pre-crash/consensus.wal" 2>/dev/null || echo ?); last WAL flush: $(grep -aoE 'Flushed WAL to disk wal.entries=[0-9]+ wal.size=[0-9]+' "$NET/node0/logs/cl.log" 2>/dev/null | tail -n 1))."
 
-# ---------- 6. crash + restart node0 CL ----------
+# ---------- 6. crash + restart node0 CL (ELs still stopped) ----------
 kill -KILL "$(pid_of 0 cl)"
 sleep 2
 nohup "$NET/node0/run-cl.sh" > /dev/null 2>&1 &
 echo $! > "$NET/node0/cl.pid"
-log "SIGKILL node0 CL, restarted with same --home (new PID $(pid_of 0 cl)). WAL replay delay is 5s."
+log "SIGKILL node0 CL, restarted with same --home (new PID $(pid_of 0 cl)). WAL replay delay is 5s; ELs still stopped."
 
-# ---------- 7. resume the mesh ----------
-kill -CONT "$(pid_of 2 cl)" "$(pid_of 3 cl)"
-log "SIGCONT node2+node3 CLs at $(date -u +%H:%M:%S). Waiting for height to advance past H=$H_STALL (max 600s)..."
+# ---------- 7. resume block production ----------
+for i in 0 1 2 3; do kill -CONT "$(pid_of "$i" el)"; done
+log "SIGCONT all 4 ELs at $(date -u +%H:%M:%S). Waiting for height to advance past H=$H_STALL (max 600s)..."
 RECOVERED=0
 for _ in $(seq 1 120); do
   h="$(eth_block_number 8545)"
@@ -219,8 +238,8 @@ log "node0 dropped_future_round_votes after restart: ${DROPPED_AFTER:-unknown} (
 {
   echo "# C2-01 preliminary verdict (observables — human confirms PROVEN/FAILED)"
   echo ""
-  echo "- Stall height H: $H_STALL"
-  echo "- node0 round baseline -> stall: ${R_FIRST:-?} -> ${R_STALL:-?} (stall reached: $STALL_OK)"
+  echo "- Stall height (CL): $H_CL; EL height at baseline: $H_STALL"
+  echo "- node0 round at height $H_CL: baseline ${R_FIRST:-?} -> stall ${R_STALL:-?} (stall reached: $STALL_OK; target >= ${R_TARGET:-?})"
   echo "- Height recovered after restart: $RECOVERED (now $(eth_block_number 8545))"
   echo "- node0 dropped_future_round_votes: before=${DROPPED_BEFORE:-?} after=${DROPPED_AFTER:-?}"
   if [[ -n "$DROPPED_BEFORE" && -n "$DROPPED_AFTER" && "$DROPPED_AFTER" -gt "$DROPPED_BEFORE" ]]; then
@@ -231,6 +250,9 @@ log "node0 dropped_future_round_votes after restart: ${DROPPED_AFTER:-unknown} (
   echo "- Lookahead-drop log lines during/after replay: $(wc -l < "$EVIDENCE_DIR/post-restart/lookahead-drops.txt" 2>/dev/null || echo 0) (see post-restart/lookahead-drops.txt)"
   echo "- Vote excerpts: pre-crash/votes-before.txt, post-restart/votes-after.txt, post-restart/node1-votes-after.txt"
   echo "- Conflicting-vote check (same (H,R), different value): MANUAL — compare the excerpts above."
+  echo "  Expected if PROVEN: node0 prevoted NIL at (H_CL, R~$R_STALL) before the crash"
+  echo "  (in pre-crash/votes-before.txt and node1's log) and prevoted a VALUE at the same"
+  echo "  (H_CL, R) after the restart (in post-restart/votes-after.txt)."
   echo ""
   echo "Files: pre-crash/consensus.wal, pre-crash/store.db, pre-crash/cl-before.log,"
   echo "post-restart/cl-after.log, metrics-before/, metrics-after/, RUNLOG.md"
