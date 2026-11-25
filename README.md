@@ -88,3 +88,25 @@ workflow artifact.
 - **PARTIAL** — vote loss shown (e.g. `dropped_future_round_votes` rose
   across the restart) but no conflicting pair captured.
 - **FAILED** — no vote loss, or the net never stalled past round 10.
+
+## Vector (c) — gossipsub subscription flood
+
+- `.github/workflows/poc-gossipsub-flood.yml` — same build/launch pattern,
+  but a **single node** (node0 CL+EL; no quorum needed) plus a plain
+  non-validator libp2p peer that subscribes to many distinct gossipsub
+  topics in stages (default 5k / 20k / 50k at 1000/s).
+- `harness/flood-peer/` — the flooding peer (Rust, libp2p 0.56.0 /
+  libp2p-gossipsub 0.49.4, the exact versions the target uses; ephemeral
+  keypair, no validator key/proof). Subscribes through the public
+  `gossipsub::Behaviour::subscribe` API, one SUBSCRIBE RPC per topic.
+- `scripts/run-flood.sh` — start node0, sample CL RSS every 1s (30s
+  baseline → flood → 60s observe), count accepted subscriptions in
+  `cl.log` (`SUBSCRIPTION: Adding gossip peer to topic`, one debug line per
+  new topic). Evidence in `evidence/gossipsub-flood/` (`VERDICT.md`,
+  `RUNLOG.md`, `rss.csv`, `rss-stats.txt`, logs, metrics before/after).
+- Static verification: `../poc-a01/STATIC-gossipsub-flood.md` (kept outside
+  this repo with the other A-01 notes). Mechanism: v0.8.0 builds the
+  behaviour with plain `gossipsub::Behaviour::new` (default
+  `AllowAllSubscriptionFilter`, no cap); each SUBSCRIBE lands in the peer's
+  unbounded `PeerDetails.topics: BTreeSet<TopicHash>`. Fixed in v0.8.2 by
+  `WhitelistSubscriptionFilter` (`network/src/behaviour.rs`).
