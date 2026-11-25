@@ -39,6 +39,7 @@ for i in 0 1 2 3; do
   EL_WS=$((8645 + i))
   EL_AUTH=$((8551 + i))
   EL_METRICS=$((9001 + i))
+  EL_P2P=$((30303 + i))
 
   # Persistent peers: the other three nodes.
   PEERS=""
@@ -58,6 +59,7 @@ exec "$BIN_DIR/arc-node-execution" node \\
   --ws --ws.addr=127.0.0.1 --ws.port=$EL_WS --ws.api=all \\
   --authrpc.addr=127.0.0.1 --authrpc.port=$EL_AUTH --authrpc.jwtsecret="$NET/shared/jwt.hex" \\
   --metrics=127.0.0.1:$EL_METRICS \\
+  --port=$EL_P2P --discovery.port=$EL_P2P \\
   --disable-discovery --ipcdisable \\
   --arc-rpc-upstream-url=http://127.0.0.1:$CL_RPC \\
   >> "$NET/node$i/logs/el.log" 2>&1

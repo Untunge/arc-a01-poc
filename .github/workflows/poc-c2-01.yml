@@ -64,6 +64,7 @@ jobs:
         with:
           workspaces: arc-node
           cache-all-crates: true
+          cache-on-failure: true
 
       - name: Build EL + CL binaries
         working-directory: arc-node

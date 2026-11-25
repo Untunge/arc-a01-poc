@@ -35,7 +35,7 @@ at the same (height, round). Fixed upstream in v0.8.1/v0.8.2
 - `scripts/net-setup.sh` — create the 4-node layout (dirs, shared genesis +
   JWT, per-node launch scripts). Port table: CL p2p 27000+i, CL metrics
   29000+i, CL RPC 31000+i, EL HTTP 8545+i, EL WS 8645+i, EL authrpc 8551+i,
-  EL metrics 9001+i.
+  EL metrics 9001+i, EL p2p 30303+i.
 - `scripts/gen_keys.py` — derive the 4 deterministic validator Ed25519 keys
   (BIP39 `m/44'/60'/0'/1/{2..5}`); self-checks against the well-known seeds
   asserted in `arc-node/crates/malachite-cli/src/new.rs`.

@@ -87,7 +87,13 @@ for i in 0 1 2 3; do
 done
 log "ELs started. Waiting for eth RPC on 8545..8548..."
 for i in 0 1 2 3; do
-  for _ in $(seq 1 36); do
+  for _ in $(seq 1 24); do
+    # fail fast if the EL process died (e.g. port collision) instead of waiting out the loop
+    if ! kill -0 "$(pid_of "$i" el)" 2>/dev/null; then
+      log "FATAL: node$i EL process died. Last EL log lines:"
+      tail -n 25 "$NET/node$i/logs/el.log" >> "$RUNLOG" 2>&1 || true
+      exit 3
+    fi
     [[ -n "$(eth_block_number $((8545 + i)))" ]] && break
     sleep 5
   done
@@ -104,6 +110,11 @@ H_BEFORE=""
 for _ in $(seq 1 60); do
   ok=1
   for i in 0 1 2 3; do
+    if ! kill -0 "$(pid_of "$i" cl)" 2>/dev/null; then
+      log "FATAL: node$i CL process died. Last CL log lines:"
+      tail -n 25 "$NET/node$i/logs/cl.log" >> "$RUNLOG" 2>&1 || true
+      exit 3
+    fi
     h="$(eth_block_number $((8545 + i)))"
     [[ -n "$h" && "$h" -gt 1 ]] || ok=0
   done
