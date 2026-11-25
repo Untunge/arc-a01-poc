@@ -111,6 +111,16 @@ peer_count() { # $1 = node index -> distinct peers seen in CL log
   [[ -f "$f" ]] || { echo "?"; return; }
   grep -aoE 'Received identity from [A-Za-z0-9]+' "$f" 2>/dev/null | awk '{print $4}' | sort -u | wc -l
 }
+received_filtered() { # $1 = cl.log path -> "Received proposal" lines that passed
+  # verify (info line with proposal.round), excluding drop/queue variants.
+  # The raw grep count is inflated by healthy-phase proposals (~1/height),
+  # so callers must compare against a before-count, not against zero.
+  python3 -c '
+import sys
+cl = open(sys.argv[1], errors="ignore").read()
+print(sum(1 for ln in cl.splitlines() if "Received proposal" in ln and "proposal.round" in ln and "dropping" not in ln and "queuing" not in ln))
+' "$1" 2>/dev/null || echo 0
+}
 
 cleanup() {
   log "Cleaning up node processes..."
@@ -265,6 +275,13 @@ WAL_SB_AFTER="$(wal_size 0)"
 log "Stalled baseline ${STALLED_BASELINE_SECS}s done. node0 WAL: $WAL_SB_BEFORE -> $WAL_SB_AFTER bytes (delta $((WAL_SB_AFTER - WAL_SB_BEFORE)))."
 
 # ---------- 7. launch proposal-peer ----------
+# Baseline "Received proposal" count BEFORE the flood (healthy-phase
+# proposals, ~1 per height) so the verdict can use the delta, not the raw
+# count (run 2 lesson: raw was 1008, of which only 240 were post-verify
+# lines and all of them healthy-phase).
+RECEIVED_BEFORE="$(received_filtered "$NET/node0/logs/cl.log")"
+echo "$RECEIVED_BEFORE" > "$EVIDENCE_DIR/received-before.txt"
+log "Node0 filtered 'Received proposal' lines before flood: $RECEIVED_BEFORE (healthy-phase baseline)."
 SEEDS_HEX="$(python3 - "$NET" <<'PYEOF'
 import sys, json, base64
 net = sys.argv[1]
@@ -312,14 +329,15 @@ else
   PEER_FAILED=0
 fi
 
-# ---------- 8. mid-check: were proposals accepted? ----------
-RECEIVED_N0="$(grep -c 'Received proposal' "$NET/node0/logs/cl.log" 2>/dev/null || true)"; RECEIVED_N0="${RECEIVED_N0:-0}"
-log "Node0 'Received proposal' log lines so far: $RECEIVED_N0"
+# ---------- 8. mid-check: were proposals accepted? (delta vs baseline) ----------
+RECEIVED_N0="$(received_filtered "$NET/node0/logs/cl.log")"
+RECEIVED_DELTA=$((RECEIVED_N0 - RECEIVED_BEFORE))
+log "Node0 filtered 'Received proposal' lines: $RECEIVED_N0 total, delta since flood start: $RECEIVED_DELTA (expect ~$((V1_COUNT + V2_COUNT)))"
 for i in 1 2 3 4; do
-  log "  node$i 'Received proposal' lines: $(grep -c 'Received proposal' "$NET/node$i/logs/cl.log" 2>/dev/null || echo 0)"
+  log "  node$i filtered 'Received proposal' lines: $(received_filtered "$NET/node$i/logs/cl.log")"
 done
-if [[ "$PEER_FAILED" == 0 && "$RECEIVED_N0" == 0 ]]; then
-  log "FATAL: peer exited 0 but node0 logged ZERO accepted proposals — signing/format/proposer wrong. See diagnosis in VERDICT."
+if [[ "$PEER_FAILED" == 0 && "$RECEIVED_DELTA" -le 0 ]]; then
+  log "FATAL: peer exited 0 but node0 logged ZERO new accepted proposals — signing/format/proposer wrong. See diagnosis in VERDICT."
   PEER_FAILED=1
 fi
 
@@ -413,7 +431,12 @@ for ln in received:
     if m1 and m2:
         gaps.append((int(m2.group(1)) - int(m1.group(1)), int(m2.group(1)),
                      int(m3.group(1)) if m3 else -1))
-print(f"== node0 cl.log: 'Received proposal' (post-verify) lines: {len(received)} (expect ~{v1+v2}) ==")
+print(f"== node0 cl.log: 'Received proposal' (post-verify) lines: {len(received)} ==")
+try:
+    before = int(open(f"{d}/received-before.txt").read().strip())
+    print(f"healthy-phase baseline before flood: {before}; DELTA since flood start: {len(received) - before} (expect ~{v1+v2})")
+except (FileNotFoundError, ValueError):
+    print("(no received-before.txt; cannot compute delta)")
 if gaps:
     gs = sorted(g[0] for g in gaps)
     print(f"proposal.round - consensus.round: min={gs[0]} median={statistics.median(gs):.0f} max={gs[-1]}; "
@@ -440,7 +463,9 @@ for i in range(1, 5):
     p = f"{d}/node-logs/node{i}-cl.log"
     if os.path.exists(p):
         c = open(p, errors="ignore").read()
-        print(f"node{i} 'Received proposal' lines: {c.count('Received proposal')}; "
+        filt = sum(1 for ln in c.splitlines() if "Received proposal" in ln
+                   and "proposal.round" in ln and "dropping" not in ln and "queuing" not in ln)
+        print(f"node{i} filtered 'Received proposal' lines: {filt}; "
               f"cap-reject: {c.count('Rejecting proposal: per-(height, round) cap reached')}")
 PYEOF
 cat "$EVIDENCE_DIR/stats.txt" | tee -a "$RUNLOG"
@@ -456,15 +481,15 @@ V2_SENT="$(grep -E '^V2_DONE' "$EVIDENCE_DIR/proposal-peer.log" | grep -oE 'sent
   echo "- Stalled height: $H_STALL (round $R_STALL at stall; EL height frozen at $H_BEFORE)"
   echo "- V1 distinct-round proposals SENT by peer (V1_DONE marker): ${V1_SENT:-?} (requested: $V1_COUNT)"
   echo "- V2 duplicate replays SENT by peer (V2_DONE marker): ${V2_SENT:-?} (requested: $V2_COUNT)"
-  echo "- Proposals ACCEPTED by node0 (cl.log 'Received proposal', post-verify): $RECEIVED_N0"
+  echo "- Proposals ACCEPTED by node0 (cl.log 'Received proposal', post-verify): $RECEIVED_N0 total, delta $RECEIVED_DELTA new since flood start (healthy-phase baseline $RECEIVED_BEFORE)"
   echo "- Stalled-baseline background WAL growth: $WAL_SB_BEFORE -> $WAL_SB_AFTER bytes in ${STALLED_BASELINE_SECS}s"
   echo "- WAL/RSS per phase + log analysis: see stats.txt (wal.csv, rss.csv, phases.tsv)"
   echo ""
   echo "TERBUKTI iff: V1_SENT == $V1_COUNT AND V2_SENT == $V2_COUNT AND"
-  echo "RECEIVED ~= V1+V2 AND WAL growth during v1/v2 phases is clearly above the"
+  echo "RECEIVED_DELTA ~= V1+V2 AND WAL growth during v1/v2 phases is clearly above the"
   echo "stalled-baseline background rate (bytes/proposal >> background B/s) AND"
   echo "cap-reject lines == 0 AND min(proposal.round - consensus.round) >= 11."
-  echo "GAGAL iff: RECEIVED == 0 (signing/format/proposer wrong), or WAL flat during"
+  echo "GAGAL iff: RECEIVED_DELTA == 0 (signing/format/proposer wrong), or WAL flat during"
   echo "flood phases, or cap-rejects / drops appear."
   echo ""
   echo "Files: cl.log, el.log, proposal-peer.log, proposal-peer.stderr,"

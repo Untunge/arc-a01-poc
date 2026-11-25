@@ -23,6 +23,15 @@
 //! responder (never sends a proof), `/ax/broadcast/1.0.0` via libp2p-scatter,
 //! join the real `/consensus` gossipsub topic first.
 //!
+//! NOTE (run 2 lesson): malachite uses **identity-hash** gossipsub topics
+//! (`Channel::to_gossipsub_topic` returns `gossipsub::IdentTopic`).
+//! Subscribing/publishing with `Sha256Topic` silently addresses a DIFFERENT
+//! topic hash: the node records the subscription under the unknown sha256
+//! hash, the local JOIN finds 0 mesh peers, zero messages arrive, and
+//! `publish` fails with `NoPeersSubscribedToTopic`. (Phase-3 flood-peer has
+//! the same latent mismatch, harmless there because it only ever sent
+//! SUBSCRIBE frames, which need no mesh.) This peer uses `IdentTopic`.
+//!
 //! Wire format (verified against arc-node @ 6e76402 source):
 //! - SSZ sign bytes = `Proposal::to_sign_bytes()` = `as_ssz_bytes()`:
 //!   container height:u64 LE | round:Option<u32> (0x00 | 0x01+LE) |
@@ -671,7 +680,7 @@ async fn main() {
                             match swarm
                                 .behaviour_mut()
                                 .gossipsub
-                                .subscribe(&gossipsub::Sha256Topic::new(topic.clone()))
+                                .subscribe(&gossipsub::IdentTopic::new(topic.clone()))
                             {
                                 Ok(_) => tracing::info!("subscribed to real topic {topic}"),
                                 Err(e) => {
@@ -699,6 +708,15 @@ async fn main() {
                         if let Some(t) = phase_until {
                             if Instant::now() >= t {
                                 // --- decide target height / base round ---
+                                // Mesh guard (run 2 lesson): if we received
+                                // ZERO gossipsub messages in the whole
+                                // observe window we are not in the node's
+                                // mesh (e.g. wrong topic hash) — fail fast
+                                // instead of dying later at publish time.
+                                if msgs_seen == 0 {
+                                    println!("FATAL no gossipsub messages received during observe window (mesh not established)");
+                                    std::process::exit(1);
+                                }
                                 let mut base_round: u64 = arg_start_round as u64;
                                 match observed {
                                     Some((oh, or_)) if oh > arg_height => {
@@ -760,7 +778,7 @@ async fn main() {
                     }
                     Phase::FloodV1 => {
                         let per_tick = rate.div_ceil(10).max(1);
-                        let topic = gossipsub::Sha256Topic::new(CONSENSUS_TOPIC.to_string());
+                        let topic = gossipsub::IdentTopic::new(CONSENSUS_TOPIC.to_string());
                         for _ in 0..per_tick {
                             if v1_sent >= v1_envelopes.len() {
                                 break;
@@ -801,7 +819,7 @@ async fn main() {
                             std::process::exit(1);
                         }
                         let per_tick = rate.div_ceil(10).max(1);
-                        let topic = gossipsub::Sha256Topic::new(CONSENSUS_TOPIC.to_string());
+                        let topic = gossipsub::IdentTopic::new(CONSENSUS_TOPIC.to_string());
                         for _ in 0..per_tick {
                             if v2_sent >= v2_count {
                                 break;
