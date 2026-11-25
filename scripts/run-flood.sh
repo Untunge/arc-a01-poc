@@ -126,6 +126,18 @@ log "  node0 EL blockNumber: $(eth_block_number 8545)"
 # connections from arbitrary peers subject only to connection/ip limits.
 # The vector is about what happens AFTER a peer connects, so the flood run
 # launches node0 with the flag stripped (same binary, same args otherwise).
+# Run 6 (45611159787): peer registered fine (no persistent_peers_only reject
+# anymore) yet the node still closed the connection ~64us after registration
+# with cause None (= closed by the LOCAL peer, pool.rs) and no malachite
+# code path logs a close. All application-level closers are eliminated
+# (persistent_peers_only, max-connections, inbound limit, ephemeral
+# timeout 5s, invalid proof, removed persistent peer, peers-request
+# rate-limit, connection/ip limits deny only pre-establishment).
+# So the closer must be inside libp2p-swarm, invisible in cl.log because
+# --log-level=debug only enables arc=/circle= targets. RUST_LOG takes
+# precedence over --log-level (malachite-cli/src/logging.rs), so enable
+# libp2p_swarm debug for this diagnostic run to name the closer.
+export RUST_LOG="libp2p_swarm=debug,arc=debug,circle=debug"
 sed '/--p2p.persistent-peers-only/d' "$NET/node0/run-cl.sh" > "$NET/node0/run-cl-flood.sh"
 chmod +x "$NET/node0/run-cl-flood.sh"
 nohup "$NET/node0/run-cl-flood.sh" > /dev/null 2>&1 &
@@ -159,7 +171,7 @@ log "Baseline ${BASELINE_SECS}s done."
 phase "flood"
 TARGET="/ip4/127.0.0.1/tcp/27000/p2p/$NODE0_PEER_ID"
 log "Starting flood-peer -> $TARGET (levels=$LEVELS rate=$RATE/s settle=${SETTLE_SECS}s hold=${HOLD_SECS}s)"
-RUST_LOG="${RUST_LOG:-debug}" "$FLOOD_BIN" --target "$TARGET" --levels "$LEVELS" --rate "$RATE" \
+RUST_LOG="debug" "$FLOOD_BIN" --target "$TARGET" --levels "$LEVELS" --rate "$RATE" \
   --settle-secs "$SETTLE_SECS" --hold-secs "$HOLD_SECS" \
   > "$EVIDENCE_DIR/flood-peer.log" 2> "$EVIDENCE_DIR/flood-peer.stderr" &
 FLOOD_PID=$!
