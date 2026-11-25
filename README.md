@@ -32,23 +32,32 @@ at the same (height, round). Fixed upstream in v0.8.1/v0.8.2
 
 - `.github/workflows/poc-c2-01.yml` — GitHub Actions workflow (ubuntu-24.04):
   build EL+CL, set up a 4-validator localnet, run the PoC, upload evidence.
-- `scripts/net-setup.sh` — create the 4-node layout (dirs, shared genesis +
+- `scripts/net-setup.sh` — create the 5-node layout (dirs, shared genesis +
   JWT, per-node launch scripts). Port table: CL p2p 27000+i, CL metrics
   29000+i, CL RPC 31000+i, EL HTTP 8545+i, EL WS 8645+i, EL authrpc 8551+i,
-  EL metrics 9001+i, EL p2p 30303+i.
-- `scripts/gen_keys.py` — derive the 4 deterministic validator Ed25519 keys
-  (BIP39 `m/44'/60'/0'/1/{2..5}`); self-checks against the well-known seeds
-  asserted in `arc-node/crates/malachite-cli/src/new.rs`.
+  EL metrics 9001+i, EL p2p 30303+i (i = 0..4).
+- `scripts/gen_keys.py` — derive the 5 deterministic validator Ed25519 keys
+  (BIP39 `m/44'/60'/0'/1/{2..6}`) + libp2p PeerIds; self-checks against the
+  well-known seeds asserted in `arc-node/crates/malachite-cli/src/new.rs`
+  and against node0's PeerId observed in the Actions run-1 CL log.
 - `scripts/verify-keys.py` — verify the 4 pubkeys are in the localdev genesis
   validator-registry storage (`0x3600...0002`).
-- `scripts/run-poc.sh` — the C2-01 sequence + evidence collection. Stall
-  mechanism (run 3 lesson): SIGSTOP all 4 **ELs**, not the CLs — stopping
-  CLs drops online power below the 67/100 quorum, so no polka ever forms and
-  the Prevote timeout is never armed (malachite schedules it only on
-  PolkaAny, `core-state-machine/src/state_machine.rs` L34/L35), so the net
-  halts at round 0 by design. With the ELs frozen, all 4 CLs keep voting
-  (80/100), no proposer can build a block, and every round ends polka-nil
-  → precommit nil → precommit timeout → next round, at the same height.
+- `scripts/run-poc.sh` — the C2-01 sequence + evidence collection
+  (5 nodes; run-5 freeze–jump–crash design). Stall mechanism: SIGSTOP all
+  **ELs** — stopping CLs drops online power below the 67/100 quorum, so no
+  polka ever forms and the Prevote timeout is never armed (malachite
+  schedules it only on PolkaAny, `core-state-machine/src/state_machine.rs`
+  L34/L35), so the net halts at round 0 by design (run 3). With the ELs
+  frozen, the CLs keep voting (80/100), no proposer can build a block, and
+  every round ends polka-nil → precommit nil → precommit timeout → next
+  round, at the same height (run 4: H51 rounds 0→21). The target is frozen
+  early (SIGSTOP its CL) so its WAL lacks the skipped rounds' Timeout
+  entries; it resumes, jumps to the high round via a round certificate
+  (which is NOT persisted to the WAL, `engine/src/wal/entry.rs`), votes
+  NIL there, is crashed, and on restart the replay drops that vote
+  (round > replay-round + 10) — then it prevotes the VALUE at the same
+  round. All 5 genesis validators run so the net keeps quorum while the
+  target is frozen.
 - `RUNBOOK-C2-01.md` — the manual runbook (same sequence, by hand).
 
 ## Run it

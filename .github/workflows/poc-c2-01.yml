@@ -20,7 +20,7 @@ on:
       stall_rounds:
         description: "Rounds past the last voted round before crashing the target"
         required: false
-        default: "12"
+        default: "15"
 
 env:
   ARC_NODE_REF: 6e764023ee6515fe70573e123ed2db912a7207b4

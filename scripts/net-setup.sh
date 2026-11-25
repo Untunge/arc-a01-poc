@@ -17,7 +17,7 @@ NET="$POC_DIR/net"
 BIN_DIR="$ARC_NODE_DIR/target/debug"
 
 mkdir -p "$NET/shared"
-for i in 0 1 2 3; do
+for i in 0 1 2 3 4; do
   mkdir -p "$NET/node$i/malachite/config" "$NET/node$i/reth" "$NET/node$i/logs"
 done
 
@@ -31,7 +31,7 @@ fi
 # Fee recipient: Hardhat/test-mnemonic account 0 (prefunded in localdev genesis).
 FEE_RECIPIENT="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
-for i in 0 1 2 3; do
+for i in 0 1 2 3 4; do
   CL_P2P=$((27000 + i))
   CL_METRICS=$((29000 + i))
   CL_RPC=$((31000 + i))

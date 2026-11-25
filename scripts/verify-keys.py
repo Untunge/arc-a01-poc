@@ -25,13 +25,13 @@ def main() -> int:
     storage = genesis["alloc"].get(registry, {}).get("storage", {})
     values = {v.lower() for v in storage.values()}
     ok = True
-    for node in range(4):
+    for node in range(5):
         seed = derive_seed_bytes(2 + node)
         pk = pubkey(seed)
         found = ("0x" + pk.hex()) in values
         print(f"node{node} pubkey 0x{pk.hex()} in-registry-storage: {found}")
         ok = ok and found
-    print("ALL 4 PUBKEYS IN GENESIS REGISTRY" if ok else "MISMATCH — keys do NOT match genesis")
+    print("ALL 5 PUBKEYS IN GENESIS REGISTRY" if ok else "MISMATCH — keys do NOT match genesis")
     return 0 if ok else 1
 
 

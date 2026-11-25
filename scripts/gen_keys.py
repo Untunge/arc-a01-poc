@@ -23,7 +23,7 @@ MNEMONIC = "test test test test test test test test test test test junk"
 PASSPHRASE = ""
 PATH_PREFIX = [44, 60, 0, 1]  # m/44'/60'/0'/1, all hardened
 START_INDEX = 2
-NODES = 4
+NODES = 5  # node0..4 = genesis validators 1..5 (indices 2..6); the 5th must run so the net keeps a 67/100 quorum while node0 is frozen (run-5 design)
 
 EXPECTED = {
     2: "93ac6a66e7b27d3b21eb05c3edf07d3380019460b761ee117cdca9d3215e1b2d",
