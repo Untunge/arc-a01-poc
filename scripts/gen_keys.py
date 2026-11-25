@@ -31,6 +31,74 @@ EXPECTED = {
     4: "a8bf2e57dbee36fcc50f072cd71ee0f885e8b36cad256c927048fd5474b6ad56",
 }
 
+EXPECTED_PEERID_0 = "12D3KooWPPDvz33xVMKguHdK6SULTBbYSUs45MhLziLNT2VZrH6b"  # observed in Actions run 1/2 CL logs
+
+# --- Ed25519 pubkey, pure stdlib (same math as verify-keys.py) ---
+_Q = (1 << 255) - 19
+_D = (-121665 * pow(121666, _Q - 2, _Q)) % _Q
+_I = pow(2, (_Q - 1) // 4, _Q)
+
+
+def _xrecover(y):
+    xx = (y * y - 1) * pow(_D * y * y + 1, _Q - 2, _Q) % _Q
+    x = pow(xx, (_Q + 3) // 8, _Q)
+    if (x * x - xx) % _Q != 0:
+        x = (x * _I) % _Q
+    if x % 2 != 0:
+        x = _Q - x
+    return x
+
+
+_BY = (4 * pow(5, _Q - 2, _Q)) % _Q
+_B = (_xrecover(_BY), _BY)
+
+
+def _edwards(P, Q_):
+    x1, y1 = P
+    x2, y2 = Q_
+    x3 = (x1 * y2 + x2 * y1) * pow(1 + _D * x1 * x2 * y1 * y2, _Q - 2, _Q) % _Q
+    y3 = (y1 * y2 + x1 * x2) * pow(1 - _D * x1 * x2 * y1 * y2, _Q - 2, _Q) % _Q
+    return (x3, y3)
+
+
+def _scalarmult(P, e):
+    Q_ = (0, 1)
+    while e > 0:
+        if e & 1:
+            Q_ = _edwards(Q_, P)
+        P = _edwards(P, P)
+        e >>= 1
+    return Q_
+
+
+def ed25519_pubkey(seed: bytes) -> bytes:
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+    x, y = _scalarmult(_B, a)
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _b58encode(b: bytes) -> str:
+    n = int.from_bytes(b, "big")
+    s = ""
+    while n:
+        n, r = divmod(n, 58)
+        s = _B58[r] + s
+    return "1" * (len(b) - len(b.lstrip(b"\x00"))) + s
+
+
+def libp2p_peer_id(pubkey_bytes: bytes) -> str:
+    """libp2p PeerId for an Ed25519 key: identity multihash (0x00 0x24) over the
+    protobuf-encoded pubkey (08 01 12 20 || pubkey), base58btc. Verified against
+    node0's observed PeerId in the Actions run-1 CL log."""
+    proto = bytes([0x08, 0x01, 0x12, 0x20]) + pubkey_bytes
+    return _b58encode(bytes([0x00, 0x24]) + proto)
+
 def hmac_sha512(key: bytes, msg: bytes) -> bytes:
     return hmac.new(key, msg, hashlib.sha512).digest()
 
@@ -105,6 +173,7 @@ def main() -> int:
             print(f"SELF-CHECK FAIL index {idx}: got {got} want {expected}", file=sys.stderr)
             return 1
     print("self-check OK: indices 2,3,4 match new.rs well-known seeds")
+    peer_ids = []
     for node in range(NODES):
         idx = START_INDEX + node
         seed = derive_seed_bytes(idx)
@@ -117,7 +186,15 @@ def main() -> int:
             )
             f.write("\n")
         os.chmod(keyfile, 0o600)
-        print(f"node{node}: path m/44'/60'/0'/1/{idx} seed {seed.hex()} -> {keyfile}")
+        pid = libp2p_peer_id(ed25519_pubkey(seed))
+        peer_ids.append(pid)
+        print(f"node{node}: path m/44'/60'/0'/1/{idx} seed {seed.hex()} -> {keyfile} peer {pid}")
+    if peer_ids[0] != EXPECTED_PEERID_0:
+        print(f"PEERID SELF-CHECK FAIL node0: got {peer_ids[0]} want {EXPECTED_PEERID_0}", file=sys.stderr)
+        return 1
+    print("peerid self-check OK: node0 PeerId matches the Actions run-1 CL log")
+    with open(os.path.join(poc, "net", "shared", "peer_ids.txt"), "w") as f:
+        f.write("\n".join(peer_ids) + "\n")
     return 0
 
 

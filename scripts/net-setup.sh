@@ -41,12 +41,10 @@ for i in 0 1 2 3; do
   EL_METRICS=$((9001 + i))
   EL_P2P=$((30303 + i))
 
-  # Persistent peers: the other three nodes.
-  PEERS=""
-  for j in 0 1 2 3; do
-    [[ "$j" == "$i" ]] && continue
-    PEERS="$PEERS --p2p.persistent-peers=/ip4/127.0.0.1/tcp/$((27000 + j))"
-  done
+  # Persistent peers are resolved at CL launch from net/shared/peer_ids.txt
+  # (written by gen_keys.py) — see run-cl.sh below. Run 2 showed bare
+  # /ip4/.../tcp/2700j multiaddrs leave node0 peered only with node2, so the
+  # multiaddrs now carry explicit /p2p/<PeerId> suffixes.
 
   cat > "$NET/node$i/run-el.sh" <<EOF
 #!/usr/bin/env bash
@@ -69,12 +67,21 @@ EOF
 #!/usr/bin/env bash
 # CL (malachite consensus) for node $i
 export ARC_GENESIS_FILE_PATH="$NET/shared/genesis.json"
+[[ -s "$NET/shared/peer_ids.txt" ]] || { echo "FATAL: peer_ids.txt missing" >&2; exit 2; }
+PEERS=""
+j=0
+while IFS= read -r pid; do
+  if [[ "\$j" != "$i" && -n "\$pid" ]]; then
+    PEERS="\$PEERS --p2p.persistent-peers=/ip4/127.0.0.1/tcp/\$((27000 + j))/p2p/\$pid"
+  fi
+  j=\$((j + 1))
+done < "$NET/shared/peer_ids.txt"
 exec "$BIN_DIR/arc-node-consensus" start \\
   --home="$NET/node$i/malachite" \\
   --moniker="node$i" \\
   --log-level=debug \\
   --p2p.addr=/ip4/127.0.0.1/tcp/$CL_P2P \\
-  $PEERS \\
+  \$PEERS \\
   --p2p.persistent-peers-only \\
   --validator --suggested-fee-recipient=$FEE_RECIPIENT \\
   --eth-rpc-endpoint=http://127.0.0.1:$EL_HTTP \\

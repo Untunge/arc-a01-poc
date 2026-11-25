@@ -56,6 +56,16 @@ max_round_in_log() { # $1 = node index -> max round number seen in CL log (toler
     | grep -oE '[0-9]+$' | sort -n | tail -n 1
 }
 pid_of() { cat "$NET/node$1/$2.pid" 2>/dev/null; }
+peer_count() { # $1 = node index -> distinct peers seen in CL log
+  local f="$NET/node$1/logs/cl.log"
+  [[ -f "$f" ]] || { echo "?"; return; }
+  grep -aoE 'Received identity from [A-Za-z0-9]+' "$f" 2>/dev/null | awk '{print $4}' | sort -u | wc -l
+}
+peer_report() {
+  for i in 0 1 2 3; do
+    log "  node$i distinct peers seen: $(peer_count "$i") (ERROR lines: $(grep -c -i ' error ' "$NET/node$i/logs/cl.log" 2>/dev/null || echo 0), WARN: $(grep -c -i ' warn ' "$NET/node$i/logs/cl.log" 2>/dev/null || echo 0))"
+  done
+}
 
 cleanup() {
   log "Cleaning up node processes..."
@@ -105,7 +115,11 @@ for i in 0 1 2 3; do
   nohup "$NET/node$i/run-cl.sh" > /dev/null 2>&1 &
   echo $! > "$NET/node$i/cl.pid"
 done
-log "CLs started. Waiting for block production (height rising on all ELs)..."
+log "CLs started. Waiting 60s for peering, then for block production..."
+sleep 60
+log "Peer report after 60s (expect 3 each):"
+peer_report
+log "Waiting for block production (height rising on all ELs)..."
 H_BEFORE=""
 for _ in $(seq 1 60); do
   ok=1
@@ -124,9 +138,14 @@ done
 for i in 0 1 2 3; do log "  node$i height: $(eth_block_number $((8545 + i)))"; done
 H_STALL="$(eth_block_number 8545)"
 if [[ -z "$H_STALL" || "$H_STALL" -le 1 ]]; then
-  log "FATAL: net did not start producing blocks. EL/CL logs:"
-  tail -n 30 "$NET/node0/logs/el.log" >> "$RUNLOG" 2>&1 || true
-  tail -n 30 "$NET/node0/logs/cl.log" >> "$RUNLOG" 2>&1 || true
+  log "FATAL: net did not start producing blocks. Per-node diagnostics:"
+  peer_report
+  for i in 0 1 2 3; do
+    log "--- node$i cl.log (last 8 lines) ---"
+    tail -n 8 "$NET/node$i/logs/cl.log" >> "$RUNLOG" 2>&1 || true
+    log "--- node$i el.log (last 8 lines) ---"
+    tail -n 8 "$NET/node$i/logs/el.log" >> "$RUNLOG" 2>&1 || true
+  done
   exit 3
 fi
 log "Net is producing blocks. Stall height H=$H_STALL."

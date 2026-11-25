@@ -9,53 +9,11 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from gen_keys import derive_seed_bytes  # noqa: E402  (gen_keys.py)
-
-Q = (1 << 255) - 19
-D = (-121665 * pow(121666, Q - 2, Q)) % Q
-I = pow(2, (Q - 1) // 4, Q)
-
-
-def xrecover(y):
-    xx = (y * y - 1) * pow(D * y * y + 1, Q - 2, Q) % Q
-    x = pow(xx, (Q + 3) // 8, Q)
-    if (x * x - xx) % Q != 0:
-        x = (x * I) % Q
-    if x % 2 != 0:
-        x = Q - x
-    return x
-
-
-BY = (4 * pow(5, Q - 2, Q)) % Q
-B = (xrecover(BY), BY)
-
-
-def edwards(P, Q_):
-    x1, y1 = P
-    x2, y2 = Q_
-    x3 = (x1 * y2 + x2 * y1) * pow(1 + D * x1 * x2 * y1 * y2, Q - 2, Q) % Q
-    # a = -1, so y3 = (y1*y2 - a*x1*x2)/(1 - d*x1*x2*y1*y2) = (y1*y2 + x1*x2)/(...)
-    y3 = (y1 * y2 + x1 * x2) * pow(1 - D * x1 * x2 * y1 * y2, Q - 2, Q) % Q
-    return (x3, y3)
-
-
-def scalarmult(P, e):
-    Q_ = (0, 1)
-    while e > 0:
-        if e & 1:
-            Q_ = edwards(Q_, P)
-        P = edwards(P, P)
-        e >>= 1
-    return Q_
+from gen_keys import derive_seed_bytes, ed25519_pubkey  # noqa: E402  (gen_keys.py)
 
 
 def pubkey(seed: bytes) -> bytes:
-    h = hashlib.sha512(seed).digest()
-    a = int.from_bytes(h[:32], "little")
-    a &= (1 << 254) - 8
-    a |= 1 << 254
-    x, y = scalarmult(B, a)
-    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+    return ed25519_pubkey(seed)
 
 
 def main() -> int:

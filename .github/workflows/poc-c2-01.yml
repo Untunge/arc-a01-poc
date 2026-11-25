@@ -92,3 +92,12 @@ jobs:
           path: evidence/
           retention-days: 30
           if-no-files-found: warn
+
+      - name: Upload node logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-c2-01-node-logs
+          path: net/*/logs/*
+          retention-days: 7
+          if-no-files-found: warn
