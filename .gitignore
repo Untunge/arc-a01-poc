@@ -1,0 +1,5 @@
+net/
+evidence/
+__pycache__/
+*.log
+*.pid

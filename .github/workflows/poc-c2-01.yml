@@ -1,0 +1,93 @@
+# PoC C2-01 — Arc A-01 (#4229458) localnet re-evaluation
+#
+# Builds unmodified arc-node (pinned commit) on a GitHub-hosted runner,
+# brings up a 4-validator localnet (manual process launch, localhost only),
+# stalls 2 validators past the 10-round lookahead, crashes + restarts the
+# target, and checks whether it re-votes at the same (H, R) — equivocation.
+#
+# Safety: localnet only (127.0.0.1), public code only (circlefin/arc-node),
+# no mainnet/testnet traffic, nothing is submitted to HackerOne from here.
+# The report + re-evaluation draft are written by a human afterwards.
+#
+# Trigger manually: gh workflow run poc-c2-01.yml
+# (No push/PR trigger on purpose — each run is a deliberate, heavy build.)
+
+name: PoC C2-01 (Arc A-01 localnet)
+
+on:
+  workflow_dispatch:
+    inputs:
+      stall_rounds:
+        description: "Rounds past the last voted round before crashing the target"
+        required: false
+        default: "12"
+
+env:
+  ARC_NODE_REF: 6e764023ee6515fe70573e123ed2db912a7207b4
+  CARGO_BUILD_JOBS: 3
+  CARGO_PROFILE_DEV_DEBUG: 0
+  POC_DIR: ${{ github.workspace }}
+
+jobs:
+  poc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Check out PoC repo
+        uses: actions/checkout@v4
+
+      - name: Check out arc-node at pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: circlefin/arc-node
+          ref: ${{ env.ARC_NODE_REF }}
+          path: arc-node
+
+      - name: Record runner resources
+        run: |
+          df -h
+          free -m
+          nproc
+
+      - name: Install system deps (libclang for bindgen/reth-mdbx-sys)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libclang-dev pkg-config libssl-dev
+
+      - name: Install Rust 1.93.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: arc-node
+          cache-all-crates: true
+
+      - name: Build EL + CL binaries
+        working-directory: arc-node
+        run: cargo build --locked -p arc-node-execution -p arc-node-consensus
+
+      - name: Disk after build
+        run: df -h
+
+      - name: Set up 4-node localnet
+        run: |
+          bash scripts/net-setup.sh
+          python3 scripts/gen_keys.py
+          python3 scripts/verify-keys.py
+
+      - name: Run PoC C2-01
+        run: bash scripts/run-poc.sh
+        env:
+          STALL_ROUNDS: ${{ inputs.stall_rounds }}
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-c2-01-evidence
+          path: evidence/
+          retention-days: 30
+          if-no-files-found: warn
