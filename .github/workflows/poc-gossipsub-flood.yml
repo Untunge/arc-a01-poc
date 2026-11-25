@@ -76,7 +76,7 @@ jobs:
         run: cargo build --locked -p arc-node-execution -p arc-node-consensus
 
       - name: Build flood-peer harness (libp2p 0.56.0 / gossipsub 0.49.4)
-        run: cargo build --release --manifest-path harness/flood-peer/Cargo.toml
+        run: cargo build --locked --release --manifest-path harness/flood-peer/Cargo.toml
 
       - name: Disk after build
         run: df -h
