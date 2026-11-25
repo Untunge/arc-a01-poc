@@ -14,6 +14,12 @@
 #   only talks gossipsub to it. Single node also keeps the per-IP inbound
 #   limit (5, ip_limits.rs) far away: the flood peer is the only inbound
 #   connection from 127.0.0.1.
+# - The flood peer first joins the real /consensus topic (shared mesh keeps
+#   the connection alive), then floods junk topics in stages. Run 4 showed a
+#   bare peer (identify "flood-peer/1.0.0", no validator-proof protocol, no
+#   shared topic) gets its connection closed ~1ms after identify; the
+#   hardened peer (run 5) presents the node's consensus protocol, answers
+#   validator proofs, and joins /consensus first.
 # - Baseline RSS 30s -> flood peer subscribes to LEVELS topics in stages
 #   (default 5000/20000/50000 at 1000/s, 10s settle per level) -> observe 60s.
 # - Observables: CL RSS sampled every 1s; node log count of
@@ -138,7 +144,7 @@ log "Baseline ${BASELINE_SECS}s done."
 phase "flood"
 TARGET="/ip4/127.0.0.1/tcp/27000/p2p/$NODE0_PEER_ID"
 log "Starting flood-peer -> $TARGET (levels=$LEVELS rate=$RATE/s settle=${SETTLE_SECS}s hold=${HOLD_SECS}s)"
-"$FLOOD_BIN" --target "$TARGET" --levels "$LEVELS" --rate "$RATE" \
+RUST_LOG="${RUST_LOG:-debug}" "$FLOOD_BIN" --target "$TARGET" --levels "$LEVELS" --rate "$RATE" \
   --settle-secs "$SETTLE_SECS" --hold-secs "$HOLD_SECS" \
   > "$EVIDENCE_DIR/flood-peer.log" 2> "$EVIDENCE_DIR/flood-peer.stderr" &
 FLOOD_PID=$!

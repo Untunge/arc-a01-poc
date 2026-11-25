@@ -99,6 +99,10 @@ workflow artifact.
   libp2p-gossipsub 0.49.4, the exact versions the target uses; ephemeral
   keypair, no validator key/proof). Subscribes through the public
   `gossipsub::Behaviour::subscribe` API, one SUBSCRIBE RPC per topic.
+  Presents itself like an ordinary compatible peer so the connection survives
+  the handshake: identify protocol `/malachitebft-core-consensus/v1beta1`,
+  a validator-proof responder (answers the node's proof, never sends one),
+  and joins the real `/consensus` topic first (shared mesh membership).
 - `scripts/run-flood.sh` — start node0, sample CL RSS every 1s (30s
   baseline → flood → 60s observe), count accepted subscriptions in
   `cl.log` (`SUBSCRIPTION: Adding gossip peer to topic`, one debug line per
