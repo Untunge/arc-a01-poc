@@ -17,9 +17,14 @@
 # - The flood peer first joins the real /consensus topic (shared mesh keeps
 #   the connection alive), then floods junk topics in stages. Run 4 showed a
 #   bare peer (identify "flood-peer/1.0.0", no validator-proof protocol, no
-#   shared topic) gets its connection closed ~1ms after identify; the
-#   hardened peer (run 5) presents the node's consensus protocol, answers
-#   validator proofs, and joins /consensus first.
+#   shared topic) gets its connection closed ~1ms after identify; run 5
+#   proved the logged cause once the protocol matched: the node rejects
+#   non-persistent peers because the localnet passes
+#   --p2p.persistent-peers-only (discovery/src/handlers/identify.rs,
+#   handle_new_peer). That flag is a localnet test config (CLI default
+#   false), so the flood run strips it from node0's launch line — the
+#   vector is about post-connect behaviour, and production nodes accept
+#   arbitrary inbound peers.
 # - Baseline RSS 30s -> flood peer subscribes to LEVELS topics in stages
 #   (default 5000/20000/50000 at 1000/s, 10s settle per level) -> observe 60s.
 # - Observables: CL RSS sampled every 1s; node log count of
@@ -112,8 +117,18 @@ for _ in $(seq 1 24); do
 done
 log "  node0 EL blockNumber: $(eth_block_number 8545)"
 
-# ---------- 2. start node0 CL ----------
-nohup "$NET/node0/run-cl.sh" > /dev/null 2>&1 &
+# ---------- 2. start node0 CL (WITHOUT --p2p.persistent-peers-only) ----------
+# Run 5 (45609362664) proved the flag is a hard gate for this PoC: the node
+# logs "Rejecting connection from non-persistent peer as persistent_peers_only
+# mode is on" (discovery/src/handlers/identify.rs, handle_new_peer) and
+# closes the connection ~1ms after identify. The flag is a localnet test
+# config (CLI default false, start.rs:523); production nodes accept inbound
+# connections from arbitrary peers subject only to connection/ip limits.
+# The vector is about what happens AFTER a peer connects, so the flood run
+# launches node0 with the flag stripped (same binary, same args otherwise).
+sed '/--p2p.persistent-peers-only/d' "$NET/node0/run-cl.sh" > "$NET/node0/run-cl-flood.sh"
+chmod +x "$NET/node0/run-cl-flood.sh"
+nohup "$NET/node0/run-cl-flood.sh" > /dev/null 2>&1 &
 echo $! > "$NET/node0/cl.pid"
 log "CL started. Waiting 60s for startup, then checking liveness..."
 sleep 60
