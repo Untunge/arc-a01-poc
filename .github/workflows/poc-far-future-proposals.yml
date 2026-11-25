@@ -1,0 +1,131 @@
+# PoC far-future proposals — Arc A-01 vector (a) (#4229458) localnet
+#
+# Builds unmodified arc-node (pinned commit) on a GitHub-hosted runner,
+# brings up a 5-node localnet (1 CL + 1 EL each, localhost only), stalls the
+# height by SIGSTOPping all 5 ELs (rounds keep skipping via polka-nil),
+# and connects a libp2p peer that sends far-future round proposals signed
+# as ONE Byzantine validator (deterministic localnet test key), measuring
+# WAL growth on the target node: distinct rounds (V1) and exact-duplicate
+# replays (V2).
+#
+# Safety: localnet only (127.0.0.1), public code only (circlefin/arc-node),
+# test keys only, no mainnet/testnet traffic, nothing is submitted to
+# HackerOne from here. The report is written by a human afterwards.
+#
+# Trigger manually: gh workflow run poc-far-future-proposals.yml
+# (No push/PR trigger on purpose — each run is a deliberate, heavy build.)
+
+name: PoC far-future proposals (Arc A-01 vector a)
+
+on:
+  workflow_dispatch:
+    inputs:
+      v1_count:
+        description: "Distinct-round far-future proposals (V1)"
+        required: false
+        default: "600"
+      v2_count:
+        description: "Duplicate replays of one proposal (V2)"
+        required: false
+        default: "600"
+      rate:
+        description: "Proposals per second"
+        required: false
+        default: "100"
+
+env:
+  ARC_NODE_REF: 6e764023ee6515fe70573e123ed2db912a7207b4
+  CARGO_BUILD_JOBS: 3
+  CARGO_PROFILE_DEV_DEBUG: 0
+  POC_DIR: ${{ github.workspace }}
+
+jobs:
+  poc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Check out PoC repo
+        uses: actions/checkout@v4
+
+      - name: Check out arc-node at pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: circlefin/arc-node
+          ref: ${{ env.ARC_NODE_REF }}
+          path: arc-node
+
+      - name: Record runner resources
+        run: |
+          df -h
+          free -m
+          nproc
+
+      - name: Install system deps (libclang for bindgen/reth-mdbx-sys)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libclang-dev pkg-config libssl-dev
+
+      - name: Install Rust 1.93.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: arc-node
+          cache-all-crates: true
+          cache-on-failure: true
+
+      - name: Build EL + CL binaries
+        working-directory: arc-node
+        run: cargo build --locked -p arc-node-execution -p arc-node-consensus
+
+      - name: Build proposal-peer harness (libp2p 0.56.0 / gossipsub 0.49.4)
+        run: cargo build --locked --release --manifest-path harness/proposal-peer/Cargo.toml
+
+      - name: Run proposal-peer unit tests (SSZ + protobuf vectors)
+        run: cargo test --locked --release --manifest-path harness/proposal-peer/Cargo.toml
+
+      - name: Disk after build
+        run: df -h
+
+      - name: Set up 5-node localnet layout
+        run: |
+          bash scripts/net-setup.sh
+          python3 scripts/gen_keys.py
+          python3 scripts/verify-keys.py
+
+      - name: Run PoC far-future proposals
+        run: bash scripts/run-far-future.sh
+        env:
+          V1_COUNT: ${{ inputs.v1_count }}
+          V2_COUNT: ${{ inputs.v2_count }}
+          RATE: ${{ inputs.rate }}
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-far-future-evidence
+          path: evidence/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload node logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-far-future-node-logs
+          path: net/node0/logs/*
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload proposal-peer Cargo.lock
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-far-future-lockfile
+          path: harness/proposal-peer/Cargo.lock
+          retention-days: 30
+          if-no-files-found: warn
