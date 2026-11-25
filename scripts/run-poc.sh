@@ -185,6 +185,9 @@ done
 H_CL="$(current_height 0)"
 R_FIRST="$(round_at_height 0 "$H_CL")"
 log "node0 CL height at baseline: ${H_CL:-unknown}, round at that height: ${R_FIRST:-unknown}"
+# Capture the drop counter NOW (all CLs alive). It must NOT be read after the
+# crash: a dead CL has no metrics server (run 5 read "unknown" there).
+DROPPED_BEFORE="$(dropped_votes 0)"
 grep -i "vote" "$NET/node0/logs/cl.log" 2>/dev/null | tail -n 50 > "$EVIDENCE_DIR/pre-crash/votes-baseline.txt" || true
 
 # ---------- 4a. freeze node0 CL early in height H_CL ----------
@@ -240,16 +243,22 @@ cp "$NET/node0/malachite/store.db" "$EVIDENCE_DIR/pre-crash/" 2>/dev/null || log
 cp "$NET/node0/logs/cl.log" "$EVIDENCE_DIR/pre-crash/cl-before.log" 2>/dev/null || true
 grep -i "vote" "$EVIDENCE_DIR/pre-crash/cl-before.log" 2>/dev/null | tail -n 100 > "$EVIDENCE_DIR/pre-crash/votes-before.txt" || true
 grep -E "Prevote\(height: $H_CL, round: $R_JUMP, value: Nil, from: 0x66d496cb" "$EVIDENCE_DIR/pre-crash/cl-before.log" 2>/dev/null | tail -n 5 > "$EVIDENCE_DIR/pre-crash/nil-vote-at-R.txt" || true
-DROPPED_BEFORE="$(dropped_votes 0)"
-log "node0 dropped_future_round_votes before crash: ${DROPPED_BEFORE:-unknown}"
+log "node0 dropped_future_round_votes before crash: ${DROPPED_BEFORE:-unknown} (read at baseline; the CL is dead now, its metrics server is down)"
 log "Pre-crash snapshot saved (WAL bytes: $(stat -c%s "$EVIDENCE_DIR/pre-crash/consensus.wal" 2>/dev/null || echo ?); last WAL flush: $(grep -aoE 'Flushed WAL to disk wal.entries=[0-9]+ wal.size=[0-9]+' "$NET/node0/logs/cl.log" 2>/dev/null | tail -n 1))."
 log "Pre-crash nil-vote lines at (H=$H_CL, R=$R_JUMP) captured: $(wc -l < "$EVIDENCE_DIR/pre-crash/nil-vote-at-R.txt" 2>/dev/null || echo 0) (see pre-crash/nil-vote-at-R.txt)."
 
-# ---------- 6. restart node0 CL (ELs still stopped, node3/4 still frozen) ----------
+# ---------- 6. restart node0 CL + resume ELs immediately ----------
+# The ELs MUST be resumed within seconds of the restart: a restarted CL
+# exits after 30s if it cannot resolve chain identity from its EL (run 5:
+# "Failed to resolve chain identity ... execution engine unreachable after
+# 30s", CL dead, replay never ran). The height still cannot decide while
+# node3/4 are frozen (online 60/100 < 67 even after node0 rejoins), so
+# resuming the ELs early is safe: the proposal at R_JUMP waits for node0.
 RESTART_LINE="$(wc -l < "$NET/node0/logs/cl.log" 2>/dev/null || echo 0)"
 nohup "$NET/node0/run-cl.sh" > /dev/null 2>&1 &
 echo $! > "$NET/node0/cl.pid"
-log "Restarted node0 CL with same --home (new PID $(pid_of 0 cl)). WAL replay delay is 5s; ELs still stopped, node3/4 still frozen."
+for i in 0 1 2 3 4; do kill -CONT "$(pid_of "$i" el)"; done
+log "Restarted node0 CL with same --home (new PID $(pid_of 0 cl)) and SIGCONT all 5 ELs at $(date -u +%H:%M:%S). WAL replay delay is 5s; node3/4 CLs still frozen."
 log "Waiting for replay to finish (max 120s)..."
 REPLAYED=0
 for _ in $(seq 1 240); do
@@ -270,8 +279,7 @@ for _ in $(seq 1 240); do
   sleep 0.5
 done
 log "node0 rejoined round $R_JUMP post-restart: $REJOINED."
-for i in 0 1 2 3 4; do kill -CONT "$(pid_of "$i" el)"; done
-log "SIGCONT all 5 ELs at $(date -u +%H:%M:%S). A proposal should now appear at round $R_JUMP; waiting for node0 to prevote a VALUE there (max 120s, poll 0.5s)..."
+log "ELs already resumed in section 6. A proposal should now appear at round $R_JUMP (node0 is its proposer); waiting for node0 to prevote a VALUE there (max 120s, poll 0.5s)..."
 VALUE_VOTE=0
 for _ in $(seq 1 240); do
   if tail -n +"$((RESTART_LINE + 1))" "$NET/node0/logs/cl.log" 2>/dev/null | grep -qE "Voting vote_type=Prevote value=[0-9a-f]{64} round=$R_JUMP"; then VALUE_VOTE=1; break; fi
