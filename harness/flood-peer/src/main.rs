@@ -20,6 +20,20 @@
 //!   on first connection and the send otherwise fails with "remote supports
 //!   none of the requested protocols". The peer NEVER sends a proof: it holds
 //!   no validator key, so it can never be classified as a validator;
+//! - a `libp2p-scatter` broadcast behaviour for `/ax/broadcast/1.0.0`
+//!   (malachite `network/src/behaviour.rs:250-257`). This one is load-bearing
+//!   and was the actual connection killer in runs 4-7: when the node opens a
+//!   broadcast substream and the peer rejects the protocol, the scatter
+//!   handler reports an error and the behaviour answers with
+//!   `ToSwarm::CloseConnection::One` (`libp2p-scatter 0.3.0 src/lib.rs:233-246`)
+//!   — the swarm then closes the WHOLE connection orderly (error None on the
+//!   node side, EPIPE/`Closed` on the peer side) ~1 ms after connect, with no
+//!   malachite log line. Run 7 proved it with node-side `libp2p_swarm=debug`:
+//!   `Connection closed: Connected {...}` (the no-error format = local close)
+//!   205 us after "Validator proof sent successfully", before identify was
+//!   even processed — which rules out every discovery/identify gate. The peer
+//!   never subscribes to broadcast topics itself, so it sends nothing on
+//!   broadcast; it only accepts the node's Subscribe frames.
 //! - it first subscribes to a real topic (`/consensus`), which puts both sides
 //!   in the same gossipsub mesh — the gossipsub handler only keeps a
 //!   connection alive while `in_mesh`.
@@ -150,6 +164,7 @@ struct FloodBehaviour {
     identify: identify::Behaviour,
     ping: ping::Behaviour,
     validator_proof: request_response::Behaviour<ProofCodec>,
+    broadcast: libp2p_scatter::Behaviour,
 }
 
 fn usage() -> ! {
@@ -248,6 +263,12 @@ async fn main() {
                 [(proof_protocol, request_response::ProtocolSupport::Inbound)],
                 request_response::Config::default(),
             ),
+            // Accept the node's /ax/broadcast/1.0.0 substreams; rejecting
+            // them makes the node's scatter behaviour close the connection
+            // (see header). No own subscriptions, so nothing is sent.
+            broadcast: libp2p_scatter::Behaviour::new(
+                libp2p_scatter::Config::default(),
+            ),
         })
         .expect("behaviour")
         .build();
@@ -330,6 +351,11 @@ async fn main() {
                             }
                             FloodBehaviourEvent::ValidatorProof(request_response::Event::InboundFailure { peer, error, .. }) => {
                                 tracing::warn!("validator proof inbound failure from {peer}: {error}");
+                            }
+                            FloodBehaviourEvent::Broadcast(event) => {
+                                // The node subscribes us to its broadcast
+                                // topics on connect; just record it.
+                                tracing::info!("broadcast event: {event:?}");
                             }
                             _ => {}
                         }
